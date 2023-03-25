@@ -14,16 +14,18 @@ import * as gnosis from "./gnosis.js";
 import * as goerli from "./goerli.js";
 import * as ropsten from "./ropsten.js";
 import * as sepolia from "./sepolia.js";
+import * as ephemery from "./ephemery.js";
 import * as chiado from "./chiado.js";
 import * as zhejiang from "./zhejiang.js";
 
-export type NetworkName = "mainnet" | "dev" | "gnosis" | "goerli" | "ropsten" | "sepolia" | "chiado" | "zhejiang";
+export type NetworkName = "mainnet" | "dev" | "gnosis" | "goerli" | "ropsten" | "sepolia" | "ephemery" | "chiado" | "zhejiang";
 export const networkNames: NetworkName[] = [
   "mainnet",
   "gnosis",
   "goerli",
   "ropsten",
   "sepolia",
+  "ephemery",
   "chiado",
   "zhejiang",
 
@@ -65,6 +67,8 @@ export function getNetworkData(
       return ropsten;
     case "sepolia":
       return sepolia;
+    case "ephemery":
+      return ephemery;
     case "chiado":
       return chiado;
     case "zhejiang":
