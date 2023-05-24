@@ -4,7 +4,7 @@ import {ForkChoice, ProtoBlock} from "@lodestar/fork-choice";
 import {allForks, ssz} from "@lodestar/types";
 import {ForkName} from "@lodestar/params";
 import {BeaconChain} from "../../../../src/chain/index.js";
-import {LocalClock} from "../../../../src/chain/clock/index.js";
+import {Clock} from "../../../../src/util/clock.js";
 import {StateRegenerator} from "../../../../src/chain/regen/index.js";
 import {validateGossipBlock} from "../../../../src/chain/validation/index.js";
 import {generateCachedState} from "../../../utils/state.js";
@@ -32,7 +32,7 @@ describe("gossip block validation", function () {
 
   beforeEach(function () {
     chain = sinon.createStubInstance(BeaconChain);
-    chain.clock = sinon.createStubInstance(LocalClock);
+    chain.clock = sinon.createStubInstance(Clock);
     sinon.stub(chain.clock, "currentSlotWithGossipDisparity").get(() => clockSlot);
     forkChoice = sinon.createStubInstance(ForkChoice);
     forkChoice.getBlockHex.returns(null);
@@ -49,9 +49,11 @@ describe("gossip block validation", function () {
     forkChoice.getFinalizedCheckpoint.returns({epoch: 0, root: ZERO_HASH, rootHex: ""});
 
     // Reset seen cache
-    (chain as {
-      seenBlockProposers: SeenBlockProposers;
-    }).seenBlockProposers = new SeenBlockProposers();
+    (
+      chain as {
+        seenBlockProposers: SeenBlockProposers;
+      }
+    ).seenBlockProposers = new SeenBlockProposers();
 
     job = {signature, message: block};
   });

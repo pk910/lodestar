@@ -1,5 +1,5 @@
 import {ContainerType, fromHexString, toHexString, Type} from "@chainsafe/ssz";
-import {ForkName} from "@lodestar/params";
+import {ForkName, isForkBlobs, isForkExecution} from "@lodestar/params";
 import {
   allForks,
   altair,
@@ -16,6 +16,7 @@ import {
   ValidatorIndex,
   RootHex,
   StringType,
+  SubcommitteeIndex,
   Wei,
 } from "@lodestar/types";
 import {ApiClientResponse} from "../../interfaces.js";
@@ -34,6 +35,12 @@ import {
   ContainerData,
 } from "../../utils/index.js";
 import {fromU64Str, fromGraffitiHex, toU64Str, U64Str, toGraffitiHex} from "../../utils/serdes.js";
+import {
+  BlockContents,
+  BlindedBlockContents,
+  AllForksBlockContentsResSerializer,
+  AllForksBlindedBlockContentsResSerializer,
+} from "../../utils/routes.js";
 import {ExecutionOptimistic} from "./beacon/block.js";
 
 // See /packages/api/src/routes/index.ts for reasoning and instructions to add new routes
@@ -95,6 +102,32 @@ export type SyncDuty = {
   validatorIndex: ValidatorIndex;
   /** The indices of the validator in the sync committee. */
   validatorSyncCommitteeIndices: number[];
+};
+
+/**
+ * From https://github.com/ethereum/beacon-APIs/pull/224
+ */
+export type BeaconCommitteeSelection = {
+  /** Index of the validator */
+  validatorIndex: ValidatorIndex;
+  /** The slot at which a validator is assigned to attest */
+  slot: Slot;
+  /** The `slot_signature` calculated by the validator for the upcoming attestation slot */
+  selectionProof: BLSSignature;
+};
+
+/**
+ * From https://github.com/ethereum/beacon-APIs/pull/224
+ */
+export type SyncCommitteeSelection = {
+  /** Index of the validator */
+  validatorIndex: ValidatorIndex;
+  /** The slot at which validator is assigned to produce a sync committee contribution */
+  slot: Slot;
+  /** SubcommitteeIndex to which the validator is assigned */
+  subcommitteeIndex: SubcommitteeIndex;
+  /** The `slot_signature` calculated by the validator for the upcoming sync committee slot */
+  selectionProof: BLSSignature;
 };
 
 export type LivenessResponseData = {
@@ -193,7 +226,7 @@ export type Api = {
     graffiti: string
   ): Promise<
     ApiClientResponse<
-      {[HttpStatusCode.OK]: {data: allForks.BeaconBlock; version: ForkName; blockValue: Wei}},
+      {[HttpStatusCode.OK]: {data: allForks.BeaconBlock | BlockContents; version: ForkName; blockValue: Wei}},
       HttpStatusCode.BAD_REQUEST | HttpStatusCode.SERVICE_UNAVAILABLE
     >
   >;
@@ -204,7 +237,13 @@ export type Api = {
     graffiti: string
   ): Promise<
     ApiClientResponse<
-      {[HttpStatusCode.OK]: {data: allForks.BlindedBeaconBlock; version: ForkName; blockValue: Wei}},
+      {
+        [HttpStatusCode.OK]: {
+          data: allForks.BlindedBeaconBlock | BlindedBlockContents;
+          version: ForkName;
+          blockValue: Wei;
+        };
+      },
       HttpStatusCode.BAD_REQUEST | HttpStatusCode.SERVICE_UNAVAILABLE
     >
   >;
@@ -303,6 +342,52 @@ export type Api = {
     proposers: ProposerPreparationData[]
   ): Promise<ApiClientResponse<{[HttpStatusCode.OK]: void}, HttpStatusCode.BAD_REQUEST>>;
 
+  /**
+   * Determine if a distributed validator has been selected to aggregate attestations
+   *
+   * This endpoint is implemented by a distributed validator middleware client to exchange
+   * partial beacon committee selection proofs for combined/aggregated selection proofs to allow
+   * a validator client to correctly determine if one of its validators has been selected to
+   * perform an aggregation duty in this slot.
+   *
+   * Note that this endpoint is not implemented by the beacon node and will return a 501 error
+   *
+   * @param requestBody An array of partial beacon committee selection proofs
+   * @returns An array of threshold aggregated beacon committee selection proofs
+   * @throws ApiError
+   */
+  submitBeaconCommitteeSelections(
+    selections: BeaconCommitteeSelection[]
+  ): Promise<
+    ApiClientResponse<
+      {[HttpStatusCode.OK]: {data: BeaconCommitteeSelection[]}},
+      HttpStatusCode.BAD_REQUEST | HttpStatusCode.NOT_IMPLEMENTED | HttpStatusCode.SERVICE_UNAVAILABLE
+    >
+  >;
+
+  /**
+   * Determine if a distributed validator has been selected to make a sync committee contribution
+   *
+   * This endpoint is implemented by a distributed validator middleware client to exchange
+   * partial sync committee selection proofs for combined/aggregated selection proofs to allow
+   * a validator client to correctly determine if one of its validators has been selected to
+   * perform a sync committee contribution (sync aggregation) duty in this slot.
+   *
+   * Note that this endpoint is not implemented by the beacon node and will return a 501 error
+   *
+   * @param requestBody An array of partial sync committee selection proofs
+   * @returns An array of threshold aggregated sync committee selection proofs
+   * @throws ApiError
+   */
+  submitSyncCommitteeSelections(
+    selections: SyncCommitteeSelection[]
+  ): Promise<
+    ApiClientResponse<
+      {[HttpStatusCode.OK]: {data: SyncCommitteeSelection[]}},
+      HttpStatusCode.BAD_REQUEST | HttpStatusCode.NOT_IMPLEMENTED | HttpStatusCode.SERVICE_UNAVAILABLE
+    >
+  >;
+
   /** Returns validator indices that have been observed to be active on the network */
   getLiveness(
     indices: ValidatorIndex[],
@@ -332,6 +417,8 @@ export const routesData: RoutesData<Api> = {
   prepareBeaconCommitteeSubnet: {url: "/eth/v1/validator/beacon_committee_subscriptions", method: "POST"},
   prepareSyncCommitteeSubnets: {url: "/eth/v1/validator/sync_committee_subscriptions", method: "POST"},
   prepareBeaconProposer: {url: "/eth/v1/validator/prepare_beacon_proposer", method: "POST"},
+  submitBeaconCommitteeSelections: {url: "/eth/v1/validator/beacon_committee_selections", method: "POST"},
+  submitSyncCommitteeSelections: {url: "/eth/v1/validator/sync_committee_selections", method: "POST"},
   getLiveness: {url: "/eth/v1/validator/liveness", method: "GET"},
   registerValidator: {url: "/eth/v1/validator/register_validator", method: "POST"},
 };
@@ -352,9 +439,30 @@ export type ReqTypes = {
   prepareBeaconCommitteeSubnet: {body: unknown};
   prepareSyncCommitteeSubnets: {body: unknown};
   prepareBeaconProposer: {body: unknown};
+  submitBeaconCommitteeSelections: {body: unknown};
+  submitSyncCommitteeSelections: {body: unknown};
   getLiveness: {query: {indices: ValidatorIndex[]; epoch: Epoch}};
   registerValidator: {body: unknown};
 };
+
+const BeaconCommitteeSelection = new ContainerType(
+  {
+    validatorIndex: ssz.ValidatorIndex,
+    slot: ssz.Slot,
+    selectionProof: ssz.BLSSignature,
+  },
+  {jsonCase: "eth2"}
+);
+
+const SyncCommitteeSelection = new ContainerType(
+  {
+    validatorIndex: ssz.ValidatorIndex,
+    slot: ssz.Slot,
+    subcommitteeIndex: ssz.SubcommitteeIndex,
+    selectionProof: ssz.BLSSignature,
+  },
+  {jsonCase: "eth2"}
+);
 
 export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
   const BeaconCommitteeSubscription = new ContainerType(
@@ -461,6 +569,14 @@ export function getReqSerializers(): ReqSerializers<Api, ReqTypes> {
       ],
       schema: {body: Schema.ObjectArray},
     },
+    submitBeaconCommitteeSelections: {
+      writeReq: (items) => ({body: ArrayOf(BeaconCommitteeSelection).toJson(items)}),
+      parseReq: () => [[]],
+    },
+    submitSyncCommitteeSelections: {
+      writeReq: (items) => ({body: ArrayOf(SyncCommitteeSelection).toJson(items)}),
+      parseReq: () => [[]],
+    },
     getLiveness: {
       writeReq: (indices, epoch) => ({query: {indices, epoch}}),
       parseReq: ({query}) => [query.indices, query.epoch],
@@ -520,18 +636,23 @@ export function getReturnTypes(): ReturnTypes<Api> {
     getProposerDuties: WithDependentRootExecutionOptimistic(ArrayOf(ProposerDuty)),
     getSyncCommitteeDuties: ContainerDataExecutionOptimistic(ArrayOf(SyncDuty)),
     produceBlock: WithBlockValue(ContainerData(ssz.phase0.BeaconBlock)),
-    produceBlockV2: WithBlockValue(WithVersion((fork: ForkName) => ssz[fork].BeaconBlock)),
+    produceBlockV2: WithBlockValue(
+      WithVersion<allForks.BeaconBlock | BlockContents>((fork: ForkName) =>
+        isForkBlobs(fork) ? AllForksBlockContentsResSerializer(() => fork) : ssz[fork].BeaconBlock
+      )
+    ),
     produceBlindedBlock: WithBlockValue(
-      WithVersion((fork: ForkName) => {
-        if (fork === ForkName.phase0 || fork === ForkName.altair) {
-          throw Error(`No BlindedBlock for fork ${fork} previous to bellatrix`);
-        }
-        return ssz[fork].BlindedBeaconBlock;
-      })
+      WithVersion<allForks.BlindedBeaconBlock | BlindedBlockContents>((fork: ForkName) =>
+        isForkBlobs(fork)
+          ? AllForksBlindedBlockContentsResSerializer(() => fork)
+          : ssz.allForksBlinded[isForkExecution(fork) ? fork : ForkName.bellatrix].BeaconBlock
+      )
     ),
     produceAttestationData: ContainerData(ssz.phase0.AttestationData),
     produceSyncCommitteeContribution: ContainerData(ssz.altair.SyncCommitteeContribution),
     getAggregatedAttestation: ContainerData(ssz.phase0.Attestation),
+    submitBeaconCommitteeSelections: ContainerData(ArrayOf(BeaconCommitteeSelection)),
+    submitSyncCommitteeSelections: ContainerData(ArrayOf(SyncCommitteeSelection)),
     getLiveness: jsonType("snake"),
   };
 }

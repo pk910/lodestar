@@ -2,12 +2,14 @@ import path from "node:path";
 import fs from "node:fs";
 import {expect} from "chai";
 import {createFromJSON, createSecp256k1PeerId} from "@libp2p/peer-id-factory";
+import {multiaddr} from "@multiformats/multiaddr";
 import {chainConfig} from "@lodestar/config/default";
 import {chainConfigToJson} from "@lodestar/config";
-import {createKeypairFromPeerId, SignableENR} from "@chainsafe/discv5";
+import {createKeypairFromPeerId, ENR, SignableENR} from "@chainsafe/discv5";
+import {LogLevel} from "@lodestar/utils";
 import {exportToJSON} from "../../../src/config/peerId.js";
 import {beaconHandlerInit} from "../../../src/cmds/beacon/handler.js";
-import {initPeerIdAndEnr} from "../../../src/cmds/beacon/initPeerIdAndEnr.js";
+import {initPeerIdAndEnr, isLocalMultiAddr} from "../../../src/cmds/beacon/initPeerIdAndEnr.js";
 import {BeaconArgs} from "../../../src/cmds/beacon/options.js";
 import {GlobalArgs} from "../../../src/options/globalOptions.js";
 import {testFilesDir, testLogger} from "../../utils.js";
@@ -39,9 +41,10 @@ describe("cmds / beacon / args handler", () => {
       listenAddress: "0.0.0.0",
       "enr.ip": enrIp,
       "enr.tcp": enrTcp,
+      nat: true,
     });
 
-    const enr = options.network.discv5?.enr as SignableENR;
+    const enr = ENR.decodeTxt(options.network.discv5?.enr as string);
 
     expect(enr.ip).to.equal(enrIp, "wrong enr.ip");
     expect(enr.tcp).to.equal(enrTcp, "wrong enr.tcp");
@@ -93,6 +96,18 @@ describe("cmds / beacon / args handler", () => {
 
     // Okay to hardcode, since this value will never change
     expect(network).equal(networkName, "Wrong network name");
+  });
+});
+
+describe("Test isLocalMultiAddr", () => {
+  it("should return true for 127.0.0.1", () => {
+    const multi0 = multiaddr("/ip4/127.0.0.1/udp/30303");
+    expect(isLocalMultiAddr(multi0)).to.equal(true);
+  });
+
+  it("should return false for 0.0.0.0", () => {
+    const multi0 = multiaddr("/ip4/0.0.0.0/udp/30303");
+    expect(isLocalMultiAddr(multi0)).to.equal(false);
   });
 });
 
@@ -170,6 +185,8 @@ describe("initPeerIdAndEnr", () => {
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 async function runBeaconHandlerInit(args: Partial<BeaconArgs & GlobalArgs>) {
   return beaconHandlerInit({
+    logLevel: LogLevel.info,
+    logFileLevel: LogLevel.debug,
     dataDir: testFilesDir,
     ...args,
   } as BeaconArgs & GlobalArgs);

@@ -10,9 +10,10 @@ import {
 } from "@lodestar/validator";
 import {getMetrics, MetricsRegister} from "@lodestar/validator";
 import {RegistryMetricCreator, collectNodeJSMetrics, HttpMetricsServer, MonitoringService} from "@lodestar/beacon-node";
+import {getNodeLogger} from "@lodestar/logger/node";
 import {getBeaconConfigFromArgs} from "../../config/index.js";
 import {GlobalArgs} from "../../options/index.js";
-import {YargsError, getDefaultGraffiti, mkdir, getCliLogger, cleanOldLogFiles} from "../../util/index.js";
+import {YargsError, cleanOldLogFiles, getDefaultGraffiti, mkdir, parseLoggerArgs} from "../../util/index.js";
 import {onGracefulShutdown, parseFeeRecipient, parseProposerConfig} from "../../util/index.js";
 import {getVersionData} from "../../util/version.js";
 import {getAccountPaths, getValidatorPaths} from "./paths.js";
@@ -35,15 +36,12 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
   const validatorPaths = getValidatorPaths(args, network);
   const accountPaths = getAccountPaths(args, network);
 
-  const {logger, logParams} = getCliLogger(
-    args,
-    {defaultLogFilepath: path.join(validatorPaths.dataDir, "validator.log")},
-    config
-  );
+  const defaultLogFilepath = path.join(validatorPaths.dataDir, "validator.log");
+  const logger = getNodeLogger(parseLoggerArgs(args, {defaultLogFilepath}, config));
   try {
-    cleanOldLogFiles(logParams.filename, logParams.rotateMaxFiles);
+    cleanOldLogFiles(args, {defaultLogFilepath});
   } catch (e) {
-    logger.debug("Not able to delete log files", logParams, e as Error);
+    logger.debug("Not able to delete log files", {}, e as Error);
   }
 
   const persistedKeysBackend = new PersistedKeysBackend(accountPaths);
@@ -108,11 +106,11 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
 
   const slashingProtection = new SlashingProtection(dbOps);
 
-  // Create metrics registry if metrics are enabled
+  // Create metrics registry if metrics are enabled or monitoring endpoint is configured
   // Send version and network data for static registries
 
-  const register = args["metrics"] ? new RegistryMetricCreator() : null;
-  const metrics = register && getMetrics((register as unknown) as MetricsRegister, {version, commit, network});
+  const register = args["metrics"] || args["monitoring.endpoint"] ? new RegistryMetricCreator() : null;
+  const metrics = register && getMetrics(register as unknown as MetricsRegister, {version, commit, network});
 
   // Start metrics server if metrics are enabled.
   // Collect NodeJS metrics defined in the Lodestar repo
@@ -120,19 +118,18 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
   if (metrics) {
     collectNodeJSMetrics(register);
 
-    const port = args["metrics.port"] ?? validatorMetricsDefaultOptions.port;
-    const address = args["metrics.address"] ?? validatorMetricsDefaultOptions.address;
-    const metricsServer = new HttpMetricsServer({port, address}, {register, logger});
+    // only start server if metrics are explicitly enabled
+    if (args["metrics"]) {
+      const port = args["metrics.port"] ?? validatorMetricsDefaultOptions.port;
+      const address = args["metrics.address"] ?? validatorMetricsDefaultOptions.address;
+      const metricsServer = new HttpMetricsServer({port, address}, {register, logger});
 
-    onGracefulShutdownCbs.push(() => metricsServer.stop());
-    await metricsServer.start();
+      onGracefulShutdownCbs.push(() => metricsServer.stop());
+      await metricsServer.start();
+    }
   }
 
   if (args["monitoring.endpoint"]) {
-    if (register == null) {
-      throw new Error("Metrics must be enabled to use monitoring");
-    }
-
     const {interval, initialDelay, requestTimeout, collectSystemStats} = validatorMonitoringDefaultOptions;
 
     const monitoring = new MonitoringService(
@@ -144,7 +141,7 @@ export async function validatorHandler(args: IValidatorCliArgs & GlobalArgs): Pr
         requestTimeout: args["monitoring.requestTimeout"] ?? requestTimeout,
         collectSystemStats: args["monitoring.collectSystemStats"] ?? collectSystemStats,
       },
-      {register, logger}
+      {register: register as RegistryMetricCreator, logger}
     );
 
     onGracefulShutdownCbs.push(() => monitoring.stop());

@@ -10,15 +10,18 @@ import {
 } from "@lodestar/state-transition";
 import {routes} from "@lodestar/api";
 import {ForkChoiceError, ForkChoiceErrorCode, EpochDifference, AncestorStatus} from "@lodestar/fork-choice";
+import {isErrorAborted} from "@lodestar/utils";
 import {ZERO_HASH_HEX} from "../../constants/index.js";
 import {toCheckpointHex} from "../stateCache/index.js";
 import {isOptimisticBlock} from "../../util/forkChoice.js";
+import {isQueueErrorAborted} from "../../util/queue/index.js";
 import {ChainEvent, ReorgEventData} from "../emitter.js";
 import {REPROCESS_MIN_TIME_TO_NEXT_SLOT_SEC} from "../reprocess.js";
 import {RegenCaller} from "../regen/interface.js";
 import type {BeaconChain} from "../chain.js";
-import {BlockInputType, FullyVerifiedBlock, ImportBlockOpts, AttestationImportOpt} from "./types.js";
+import {FullyVerifiedBlock, ImportBlockOpts, AttestationImportOpt} from "./types.js";
 import {getCheckpointFromState} from "./utils/checkpoint.js";
+import {writeBlockInputToDb} from "./writeBlockInputToDb.js";
 
 /**
  * Fork-choice allows to import attestations from current (0) or past (1) epoch.
@@ -51,7 +54,7 @@ export async function importBlock(
   opts: ImportBlockOpts
 ): Promise<void> {
   const {blockInput, postState, parentBlockSlot, executionStatus} = fullyVerifiedBlock;
-  const {block} = blockInput;
+  const {block, source} = blockInput;
   const blockRoot = this.config.getForkTypes(block.message.slot).BeaconBlock.hashTreeRoot(block.message);
   const blockRootHex = toHexString(blockRoot);
   const currentEpoch = computeEpochAtSlot(this.forkChoice.getTime());
@@ -60,22 +63,9 @@ export async function importBlock(
   const blockDelaySec = (fullyVerifiedBlock.seenTimestampSec - postState.genesisTime) % this.config.SECONDS_PER_SLOT;
 
   // 1. Persist block to hot DB (pre-emptively)
-
-  await this.db.block.add(block);
-  this.logger.debug("Persisted block to hot DB", {
-    slot: block.message.slot,
-    root: blockRootHex,
-  });
-
-  if (blockInput.type === BlockInputType.postDeneb) {
-    const {blobs} = blockInput;
-    // NOTE: Old blobs are pruned on archive
-    await this.db.blobsSidecar.add(blobs);
-    this.logger.debug("Persisted blobsSidecar to hot DB", {
-      blobsLen: blobs.blobs.length,
-      slot: blobs.beaconBlockSlot,
-      root: toHexString(blobs.beaconBlockRoot),
-    });
+  // If eagerPersistBlock = true we do that in verifyBlocksInEpoch to batch all I/O operations to save block time to head
+  if (!opts.eagerPersistBlock) {
+    await writeBlockInputToDb.call(this, [blockInput]);
   }
 
   // 2. Import block to fork choice
@@ -89,7 +79,13 @@ export async function importBlock(
     this.clock.currentSlot,
     executionStatus
   );
-  this.logger.verbose("Added block to forkchoice", {slot: block.message.slot, root: blockRootHex});
+
+  // This adds the state necessary to process the next block
+  // Some block event handlers require state being in state cache so need to do this before emitting EventType.block
+  this.stateCache.add(postState);
+
+  this.metrics?.importBlock.bySource.inc({source});
+  this.logger.verbose("Added block to forkchoice and state cache", {slot: block.message.slot, root: blockRootHex});
   this.emitter.emit(routes.events.EventType.block, {
     block: toHexString(this.config.getForkTypes(block.message.slot).BeaconBlock.hashTreeRoot(block.message)),
     slot: block.message.slot,
@@ -240,7 +236,7 @@ export async function importBlock(
       // Only track "recent" blocks. Otherwise sync can distort this metrics heavily.
       // We want to track recent blocks coming from gossip, unknown block sync, and API.
       if (delaySec < 64 * this.config.SECONDS_PER_SLOT) {
-        this.metrics.elapsedTimeTillBecomeHead.observe(delaySec);
+        this.metrics.importBlock.elapsedTimeTillBecomeHead.observe(delaySec);
       }
     }
 
@@ -274,15 +270,18 @@ export async function importBlock(
     // - Persist state witness
     // - Use block's syncAggregate
     if (blockEpoch >= this.config.ALTAIR_FORK_EPOCH) {
-      try {
-        this.lightClientServer.onImportBlockHead(
-          block.message as allForks.AllForksLightClient["BeaconBlock"],
-          postState as CachedBeaconStateAltair,
-          parentBlockSlot
-        );
-      } catch (e) {
-        this.logger.error("Error lightClientServer.onImportBlock", {slot: block.message.slot}, e as Error);
-      }
+      // we want to import block asap so do this in the next event loop
+      setTimeout(() => {
+        try {
+          this.lightClientServer.onImportBlockHead(
+            block.message as allForks.AllForksLightClient["BeaconBlock"],
+            postState as CachedBeaconStateAltair,
+            parentBlockSlot
+          );
+        } catch (e) {
+          this.logger.verbose("Error lightClientServer.onImportBlock", {slot: block.message.slot}, e as Error);
+        }
+      }, 0);
     }
   }
 
@@ -320,15 +319,12 @@ export async function importBlock(
           finalizedBlockHash
         )
         .catch((e) => {
-          this.logger.error("Error pushing notifyForkchoiceUpdate()", {headBlockHash, finalizedBlockHash}, e);
+          if (!isErrorAborted(e) && !isQueueErrorAborted(e)) {
+            this.logger.error("Error pushing notifyForkchoiceUpdate()", {headBlockHash, finalizedBlockHash}, e);
+          }
         });
     }
   }
-
-  // 7. Add post state to stateCache
-  //
-  // This adds the state necessary to process the next block
-  this.stateCache.add(postState);
 
   if (!isStateValidatorsNodesPopulated(postState)) {
     this.logger.verbose("After importBlock caching postState without SSZ cache", {slot: postState.slot});

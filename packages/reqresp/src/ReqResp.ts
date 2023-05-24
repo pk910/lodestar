@@ -6,7 +6,15 @@ import {Logger} from "@lodestar/utils";
 import {getMetrics, Metrics, MetricsRegister} from "./metrics.js";
 import {RequestError, RequestErrorCode, sendRequest, SendRequestOpts} from "./request/index.js";
 import {handleRequest} from "./response/index.js";
-import {Encoding, ProtocolDefinition, ReqRespRateLimiterOpts} from "./types.js";
+import {
+  DialOnlyProtocol,
+  Encoding,
+  MixedProtocol,
+  ReqRespRateLimiterOpts,
+  Protocol,
+  ProtocolDescriptor,
+  ResponseIncoming,
+} from "./types.js";
 import {formatProtocolID} from "./utils/protocolId.js";
 import {ReqRespRateLimiter} from "./rate_limiter/ReqRespRateLimiter.js";
 
@@ -50,7 +58,11 @@ export class ReqResp {
   private readonly protocolPrefix: string;
 
   /** `${protocolPrefix}/${method}/${version}/${encoding}` */
-  private readonly registeredProtocols = new Map<ProtocolID, ProtocolDefinition>();
+  // Use any to avoid TS error on registering protocol
+  // Type 'unknown' is not assignable to type 'Resp'
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private readonly registeredProtocols = new Map<ProtocolID, MixedProtocol>();
+  private readonly dialOnlyProtocols = new Map<ProtocolID, boolean>();
 
   constructor(modules: ReqRespProtocolModules, private readonly opts: ReqRespOpts = {}) {
     this.libp2p = modules.libp2p;
@@ -61,26 +73,37 @@ export class ReqResp {
   }
 
   /**
+   * Register protocol which will be used only to dial to other peers
+   * The libp2p instance will not handle that protocol
+   *
+   * Made it explicit method to avoid any developer mistake
+   */
+  registerDialOnlyProtocol(protocol: DialOnlyProtocol, opts?: ReqRespRegisterOpts): void {
+    const protocolID = this.formatProtocolID(protocol);
+
+    // libp2p will throw on error on duplicates, allow to overwrite behavior
+    if (opts?.ignoreIfDuplicate && this.registeredProtocols.has(protocolID)) {
+      return;
+    }
+
+    this.registeredProtocols.set(protocolID, protocol);
+    this.dialOnlyProtocols.set(protocolID, true);
+  }
+
+  /**
    * Register protocol as supported and to libp2p.
    * async because libp2p registar persists the new protocol list in the peer-store.
    * Throws if the same protocol is registered twice.
    * Can be called at any time, no concept of started / stopped
    */
-  async registerProtocol<Req, Resp>(
-    protocol: ProtocolDefinition<Req, Resp>,
-    opts?: ReqRespRegisterOpts
-  ): Promise<void> {
+  async registerProtocol(protocol: Protocol, opts?: ReqRespRegisterOpts): Promise<void> {
     const protocolID = this.formatProtocolID(protocol);
+    const {handler: _handler, inboundRateLimits, ...rest} = protocol;
+    this.registerDialOnlyProtocol(rest, opts);
+    this.dialOnlyProtocols.set(protocolID, false);
 
-    // libp2p will throw on error on duplicates, allow to overwrite behaviour
-    if (opts?.ignoreIfDuplicate && this.registeredProtocols.has(protocolID)) {
-      return;
-    }
-
-    this.registeredProtocols.set(protocolID, protocol as ProtocolDefinition);
-
-    if (protocol.inboundRateLimits) {
-      this.rateLimiter.initRateLimits(protocolID, protocol.inboundRateLimits);
+    if (inboundRateLimits) {
+      this.rateLimiter.initRateLimits(protocolID, inboundRateLimits);
     }
 
     return this.libp2p.handle(protocolID, this.getRequestHandler(protocol, protocolID));
@@ -120,22 +143,23 @@ export class ReqResp {
   }
 
   async stop(): Promise<void> {
+    this.rateLimiter.stop();
     this.controller.abort();
   }
 
   // Helper to reduce code duplication
-  protected async *sendRequest<Req, Resp>(
+  async *sendRequest(
     peerId: PeerId,
     method: string,
     versions: number[],
     encoding: Encoding,
-    body: Req
-  ): AsyncIterable<Resp> {
+    body: Uint8Array
+  ): AsyncIterable<ResponseIncoming> {
     const peerClient = this.opts.getPeerLogMetadata?.(peerId.toString());
     this.metrics?.outgoingRequests.inc({method});
     const timer = this.metrics?.outgoingRequestRoundtripTime.startTimer({method});
 
-    const protocols: ProtocolDefinition[] = [];
+    const protocols: (MixedProtocol | DialOnlyProtocol)[] = [];
     const protocolIDs: string[] = [];
 
     for (const version of versions) {
@@ -149,7 +173,7 @@ export class ReqResp {
     }
 
     try {
-      yield* sendRequest<Req, Resp>(
+      yield* sendRequest(
         {logger: this.logger, libp2p: this.libp2p, peerClient},
         peerId,
         protocols,
@@ -176,8 +200,12 @@ export class ReqResp {
     }
   }
 
-  private getRequestHandler<Req, Resp>(protocol: ProtocolDefinition<Req, Resp>, protocolID: string) {
+  private getRequestHandler(protocol: MixedProtocol, protocolID: string) {
     return async ({connection, stream}: {connection: Connection; stream: Stream}) => {
+      if (this.dialOnlyProtocols.get(protocolID)) {
+        throw new Error(`Received request on dial only protocol '${protocolID}'`);
+      }
+
       const peerId = connection.remotePeer;
       const peerClient = this.opts.getPeerLogMetadata?.(peerId.toString());
       const {method} = protocol;
@@ -185,14 +213,14 @@ export class ReqResp {
       this.metrics?.incomingRequests.inc({method});
       const timer = this.metrics?.incomingRequestHandlerTime.startTimer({method});
 
-      this.onIncomingRequest?.(peerId, protocol as ProtocolDefinition);
+      this.onIncomingRequest?.(peerId, protocol as MixedProtocol);
 
       try {
-        await handleRequest<Req, Resp>({
+        await handleRequest({
           logger: this.logger,
           stream,
           peerId,
-          protocol,
+          protocol: protocol as Protocol,
           protocolID,
           rateLimiter: this.rateLimiter,
           signal: this.controller.signal,
@@ -205,7 +233,7 @@ export class ReqResp {
         this.metrics?.incomingErrors.inc({method});
 
         if (err instanceof RequestError) {
-          this.onIncomingRequestError(protocol, err);
+          this.onIncomingRequestError(protocol as ProtocolDescriptor, err);
         }
 
         // TODO: Do error peer scoring here
@@ -216,12 +244,12 @@ export class ReqResp {
     };
   }
 
-  protected onIncomingRequest(_peerId: PeerId, _protocol: ProtocolDefinition): void {
+  protected onIncomingRequest(_peerId: PeerId, _protocol: ProtocolDescriptor): void {
     // Override
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  protected onIncomingRequestError(_protocol: ProtocolDefinition<any, any>, _error: RequestError): void {
+  protected onIncomingRequestError(_protocol: ProtocolDescriptor, _error: RequestError): void {
     // Override
   }
 
@@ -235,7 +263,7 @@ export class ReqResp {
    * ```
    * https://github.com/ethereum/consensus-specs/blob/v1.2.0/specs/phase0/p2p-interface.md#protocol-identification
    */
-  protected formatProtocolID(protocol: Pick<ProtocolDefinition, "method" | "version" | "encoding">): string {
+  protected formatProtocolID(protocol: Pick<MixedProtocol, "method" | "version" | "encoding">): string {
     return formatProtocolID(this.protocolPrefix, protocol.method, protocol.version, protocol.encoding);
   }
 }

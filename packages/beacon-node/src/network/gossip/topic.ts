@@ -1,4 +1,4 @@
-import {ssz} from "@lodestar/types";
+import {phase0, ssz} from "@lodestar/types";
 import {ForkDigestContext} from "@lodestar/config";
 import {
   ATTESTATION_SUBNET_COUNT,
@@ -8,7 +8,8 @@ import {
   isForkLightClient,
 } from "@lodestar/params";
 
-import {GossipEncoding, GossipTopic, GossipType, GossipTopicTypeMap} from "./interface.js";
+import {GossipAction, GossipActionError, GossipErrorCode} from "../../chain/errors/gossipValidation.js";
+import {GossipEncoding, GossipTopic, GossipType, GossipTopicTypeMap, SSZTypeOfGossipTopic} from "./interface.js";
 import {DEFAULT_ENCODING} from "./constants.js";
 
 export interface IGossipTopicCache {
@@ -107,6 +108,29 @@ export function getGossipSSZType(topic: GossipTopic) {
         : ssz.altair.LightClientFinalityUpdate;
     case GossipType.bls_to_execution_change:
       return ssz.capella.SignedBLSToExecutionChange;
+  }
+}
+
+/**
+ * Deserialize a gossip serialized data into an ssz object.
+ */
+export function sszDeserialize<T extends GossipTopic>(topic: T, serializedData: Uint8Array): SSZTypeOfGossipTopic<T> {
+  const sszType = getGossipSSZType(topic);
+  try {
+    return sszType.deserialize(serializedData) as SSZTypeOfGossipTopic<T>;
+  } catch (e) {
+    throw new GossipActionError(GossipAction.REJECT, {code: GossipErrorCode.INVALID_SERIALIZED_BYTES_ERROR_CODE});
+  }
+}
+
+/**
+ * Deserialize a gossip serialized data into an Attestation object.
+ */
+export function sszDeserializeAttestation(serializedData: Uint8Array): phase0.Attestation {
+  try {
+    return ssz.phase0.Attestation.deserialize(serializedData);
+  } catch (e) {
+    throw new GossipActionError(GossipAction.REJECT, {code: GossipErrorCode.INVALID_SERIALIZED_BYTES_ERROR_CODE});
   }
 }
 
@@ -225,3 +249,19 @@ function parseEncodingStr(encodingStr: string): GossipEncoding {
       throw Error(`Unknown encoding ${encodingStr}`);
   }
 }
+
+// TODO: Review which yes, and which not
+export const gossipTopicIgnoreDuplicatePublishError: Record<GossipType, boolean> = {
+  [GossipType.beacon_block]: true,
+  [GossipType.beacon_block_and_blobs_sidecar]: true,
+  [GossipType.beacon_aggregate_and_proof]: true,
+  [GossipType.beacon_attestation]: true,
+  [GossipType.voluntary_exit]: true,
+  [GossipType.proposer_slashing]: false, // Why not this ones?
+  [GossipType.attester_slashing]: false,
+  [GossipType.sync_committee_contribution_and_proof]: true,
+  [GossipType.sync_committee]: true,
+  [GossipType.light_client_finality_update]: false,
+  [GossipType.light_client_optimistic_update]: false,
+  [GossipType.bls_to_execution_change]: true,
+};

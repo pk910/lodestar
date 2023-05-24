@@ -1,7 +1,7 @@
-import {CachedBeaconStateAllForks, computeEpochAtSlot} from "@lodestar/state-transition";
+import {CachedBeaconStateAllForks, computeEpochAtSlot, DataAvailableStatus} from "@lodestar/state-transition";
 import {MaybeValidExecutionStatus} from "@lodestar/fork-choice";
-import {allForks, deneb, Slot} from "@lodestar/types";
-import {ForkSeq} from "@lodestar/params";
+import {allForks, deneb, Slot, WithOptionalBytes} from "@lodestar/types";
+import {ForkSeq, MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS} from "@lodestar/params";
 import {ChainForkConfig} from "@lodestar/config";
 
 export enum BlockInputType {
@@ -9,36 +9,51 @@ export enum BlockInputType {
   postDeneb = "postDeneb",
 }
 
+/** Enum to represent where blocks come from */
+export enum BlockSource {
+  gossip = "gossip",
+  api = "api",
+  byRange = "req_resp_by_range",
+  byRoot = "req_resp_by_root",
+}
+
 export type BlockInput =
-  | {type: BlockInputType.preDeneb; block: allForks.SignedBeaconBlock}
-  | {type: BlockInputType.postDeneb; block: allForks.SignedBeaconBlock; blobs: deneb.BlobsSidecar};
+  | {type: BlockInputType.preDeneb; block: allForks.SignedBeaconBlock; source: BlockSource}
+  | {type: BlockInputType.postDeneb; block: allForks.SignedBeaconBlock; source: BlockSource; blobs: deneb.BlobsSidecar};
 
 export function blockRequiresBlobs(config: ChainForkConfig, blockSlot: Slot, clockSlot: Slot): boolean {
   return (
     config.getForkSeq(blockSlot) >= ForkSeq.deneb &&
     // Only request blobs if they are recent enough
-    computeEpochAtSlot(blockSlot) >= computeEpochAtSlot(clockSlot) - config.MIN_EPOCHS_FOR_BLOBS_SIDECARS_REQUESTS
+    computeEpochAtSlot(blockSlot) >= computeEpochAtSlot(clockSlot) - MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS
   );
 }
 
 export const getBlockInput = {
-  preDeneb(config: ChainForkConfig, block: allForks.SignedBeaconBlock): BlockInput {
+  preDeneb(config: ChainForkConfig, block: allForks.SignedBeaconBlock, source: BlockSource): BlockInput {
     if (config.getForkSeq(block.message.slot) >= ForkSeq.deneb) {
       throw Error(`Post Deneb block slot ${block.message.slot}`);
     }
     return {
       type: BlockInputType.preDeneb,
       block,
+      source,
     };
   },
 
-  postDeneb(config: ChainForkConfig, block: allForks.SignedBeaconBlock, blobs: deneb.BlobsSidecar): BlockInput {
+  postDeneb(
+    config: ChainForkConfig,
+    block: allForks.SignedBeaconBlock,
+    source: BlockSource,
+    blobs: deneb.BlobsSidecar
+  ): BlockInput {
     if (config.getForkSeq(block.message.slot) < ForkSeq.deneb) {
       throw Error(`Pre Deneb block slot ${block.message.slot}`);
     }
     return {
       type: BlockInputType.postDeneb,
       block,
+      source,
       blobs,
     };
   },
@@ -86,13 +101,15 @@ export type ImportBlockOpts = {
   validBlobsSidecar?: boolean;
   /** Seen timestamp seconds */
   seenTimestampSec?: number;
+  /** Set to true if persist block right at verification time */
+  eagerPersistBlock?: boolean;
 };
 
 /**
  * A wrapper around a `SignedBeaconBlock` that indicates that this block is fully verified and ready to import
  */
 export type FullyVerifiedBlock = {
-  blockInput: BlockInput;
+  blockInput: WithOptionalBytes<BlockInput>;
   postState: CachedBeaconStateAllForks;
   parentBlockSlot: Slot;
   proposerBalanceDelta: number;
@@ -101,6 +118,7 @@ export type FullyVerifiedBlock = {
    * used in optimistic sync or for merge block
    */
   executionStatus: MaybeValidExecutionStatus;
+  dataAvailableStatus: DataAvailableStatus;
   /** Seen timestamp seconds */
   seenTimestampSec: number;
 };

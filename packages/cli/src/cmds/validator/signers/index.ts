@@ -4,12 +4,13 @@ import {deriveEth2ValidatorKeys, deriveKeyFromMnemonic} from "@chainsafe/bls-key
 import {interopSecretKey} from "@lodestar/state-transition";
 import {externalSignerGetKeys, Signer, SignerType} from "@lodestar/validator";
 import {toHexString} from "@chainsafe/ssz";
-import {Logger} from "@lodestar/utils";
+import {LogLevel, Logger} from "@lodestar/utils";
 import {defaultNetwork, GlobalArgs} from "../../../options/index.js";
 import {assertValidPubkeysHex, isValidHttpUrl, parseRange, YargsError} from "../../../util/index.js";
 import {getAccountPaths} from "../paths.js";
 import {IValidatorCliArgs} from "../options.js";
-import {decryptKeystoreDefinitions, PersistedKeysBackend} from "../keymanager/persistedKeys.js";
+import {PersistedKeysBackend} from "../keymanager/persistedKeys.js";
+import {decryptKeystoreDefinitions} from "../keymanager/decryptKeystoreDefinitions/index.js";
 import {showProgress} from "../../../util/progress.js";
 import {importKeystoreDefinitionsFromExternalDir, readPassphraseOrPrompt} from "./importExternalKeystores.js";
 
@@ -43,7 +44,7 @@ const KEYSTORE_IMPORT_PROGRESS_MS = 10000;
 export async function getSignersFromArgs(
   args: IValidatorCliArgs & GlobalArgs,
   network: string,
-  {logger, signal}: {logger: Pick<Logger, "info">; signal: AbortSignal}
+  {logger, signal}: {logger: Pick<Logger, LogLevel.info | LogLevel.warn | LogLevel.debug>; signal: AbortSignal}
 ): Promise<Signer[]> {
   const accountPaths = getAccountPaths(args, network);
 
@@ -95,9 +96,10 @@ export async function getSignersFromArgs(
       },
     });
     return decryptKeystoreDefinitions(keystoreDefinitions, {
-      ...args,
+      ignoreLockFile: args.force,
       onDecrypt: needle,
       cacheFilePath: path.join(accountPaths.cacheDir, "imported_keystores.cache"),
+      logger,
     });
   }
 
@@ -127,9 +129,10 @@ export async function getSignersFromArgs(
     });
 
     const keystoreSigners = await decryptKeystoreDefinitions(keystoreDefinitions, {
-      ...args,
+      ignoreLockFile: args.force,
       onDecrypt: needle,
       cacheFilePath: path.join(accountPaths.cacheDir, "local_keystores.cache"),
+      logger,
     });
 
     // Read local remote keys, imported via keymanager api

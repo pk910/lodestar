@@ -79,12 +79,19 @@ function setupForkChoice(): ProtoArray {
   );
 
   for (const block of blocks) {
-    const executionData = (block.executionStatus === ExecutionStatus.PreMerge
-      ? {executionPayloadBlockHash: null, executionStatus: ExecutionStatus.PreMerge}
-      : {executionPayloadBlockHash: block.root, executionStatus: block.executionStatus}) as BlockExecution;
+    const executionData = (
+      block.executionStatus === ExecutionStatus.PreMerge
+        ? {executionPayloadBlockHash: null, executionStatus: ExecutionStatus.PreMerge}
+        : {
+            executionPayloadBlockHash: block.root,
+            executionPayloadNumber: block.slot,
+            executionStatus: block.executionStatus,
+          }
+    ) as BlockExecution;
     fc.onBlock(
       {
         slot: block.slot,
+        proposerIndex: 0,
         blockRoot: block.root,
         parentRoot: block.parent,
         stateRoot: "-",

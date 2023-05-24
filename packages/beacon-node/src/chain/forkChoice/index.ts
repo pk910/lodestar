@@ -65,6 +65,7 @@ export function initializeForkChoice(
     ProtoArray.initialize(
       {
         slot: blockHeader.slot,
+        proposerIndex: blockHeader.proposerIndex,
         parentRoot: toHexString(blockHeader.parentRoot),
         stateRoot: toHexString(blockHeader.stateRoot),
         blockRoot: toHexString(checkpoint.root),
@@ -81,6 +82,7 @@ export function initializeForkChoice(
         ...(isExecutionStateType(state) && isMergeTransitionComplete(state)
           ? {
               executionPayloadBlockHash: toHexString(state.latestExecutionPayloadHeader.blockHash),
+              executionPayloadNumber: state.latestExecutionPayloadHeader.blockNumber,
               executionStatus: blockHeader.slot === GENESIS_SLOT ? ExecutionStatus.Valid : ExecutionStatus.Syncing,
             }
           : {executionPayloadBlockHash: null, executionStatus: ExecutionStatus.PreMerge}),

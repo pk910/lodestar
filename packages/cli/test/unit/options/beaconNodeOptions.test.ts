@@ -23,6 +23,8 @@ describe("options / beaconNodeOptions", () => {
       "chain.persistInvalidSszObjects": true,
       "chain.proposerBoostEnabled": false,
       "chain.disableImportExecutionFcU": false,
+      "chain.preaggregateSlotDistance": 1,
+      "chain.attDataCacheSlotDistance": 2,
       "chain.computeUnrealized": true,
       suggestedFeeRecipient: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "chain.assertCorrectProgressiveBalances": true,
@@ -50,6 +52,7 @@ describe("options / beaconNodeOptions", () => {
       "builder.timeout": 12000,
       "builder.faultInspectionWindow": 32,
       "builder.allowedFaults": 16,
+      "builder.userAgent": "lodestar/-",
 
       metrics: true,
       "metrics.port": 8765,
@@ -68,6 +71,7 @@ describe("options / beaconNodeOptions", () => {
       bootnodes: ["enr:-somedata"],
       targetPeers: 25,
       subscribeAllSubnets: true,
+      disablePeerScoring: true,
       mdns: false,
       "network.maxPeers": 30,
       "network.connectToDiscv5Bootnodes": true,
@@ -110,6 +114,8 @@ describe("options / beaconNodeOptions", () => {
         persistInvalidSszObjects: true,
         proposerBoostEnabled: false,
         disableImportExecutionFcU: false,
+        preaggregateSlotDistance: 1,
+        attDataCacheSlotDistance: 2,
         computeUnrealized: true,
         safeSlotsToImportOptimistically: 256,
         suggestedFeeRecipient: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -139,6 +145,7 @@ describe("options / beaconNodeOptions", () => {
         timeout: 12000,
         faultInspectionWindow: 32,
         allowedFaults: 16,
+        userAgent: "lodestar/-",
       },
       metrics: {
         enabled: true,
@@ -154,7 +161,7 @@ describe("options / beaconNodeOptions", () => {
       },
       network: {
         discv5: {
-          enabled: true,
+          config: {},
           bindAddr: "/ip4/127.0.0.1/udp/9002",
           bootEnrs: ["enr:-somedata"],
         },
@@ -162,6 +169,7 @@ describe("options / beaconNodeOptions", () => {
         targetPeers: 25,
         localMultiaddrs: ["/ip4/127.0.0.1/tcp/9001"],
         subscribeAllSubnets: true,
+        disablePeerScoring: true,
         connectToDiscv5Bootnodes: true,
         discv5FirstQueryDelayMs: 1000,
         dontSendGossipAttestationsToForkchoice: true,

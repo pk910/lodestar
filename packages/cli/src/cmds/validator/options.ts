@@ -1,6 +1,6 @@
 import {defaultOptions} from "@lodestar/validator";
-import {logOptions} from "../../options/logOptions.js";
-import {ensure0xPrefix, CliCommandOptions, LogArgs} from "../../util/index.js";
+import {LogArgs, logOptions} from "../../options/logOptions.js";
+import {ensure0xPrefix, CliCommandOptions} from "../../util/index.js";
 import {keymanagerRestApiServerOptsDefault} from "./keymanager/server.js";
 import {defaultAccountPaths, defaultValidatorPaths} from "./paths.js";
 
@@ -322,7 +322,7 @@ export const validatorOptions: CliCommandOptions<IValidatorCliArgs> = {
   "monitoring.endpoint": {
     type: "string",
     description:
-      "Enables monitoring service for sending clients stats to the specified endpoint of a remote service (e.g. beaconcha.in). It is required that metrics are also enabled by supplying the --metrics flag.",
+      "Enables monitoring service for sending clients stats to the specified endpoint of a remote service (e.g. beaconcha.in)",
     group: "monitoring",
   },
 

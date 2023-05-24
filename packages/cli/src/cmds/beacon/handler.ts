@@ -1,16 +1,17 @@
 import path from "node:path";
 import {Registry} from "prom-client";
-import {ErrorAborted, Logger} from "@lodestar/utils";
+import {ErrorAborted} from "@lodestar/utils";
 import {LevelDbController} from "@lodestar/db";
 import {BeaconNode, BeaconDb} from "@lodestar/beacon-node";
 import {ChainForkConfig, createBeaconConfig} from "@lodestar/config";
 import {ACTIVE_PRESET, PresetName} from "@lodestar/params";
 import {ProcessShutdownCallback} from "@lodestar/validator";
+import {LoggerNode, getNodeLogger} from "@lodestar/logger/node";
 
 import {GlobalArgs, parseBeaconNodeArgs} from "../../options/index.js";
 import {BeaconNodeOptions, getBeaconConfigFromArgs} from "../../config/index.js";
 import {getNetworkBootnodes, getNetworkData, isKnownNetworkName, readBootnodes} from "../../networks/index.js";
-import {onGracefulShutdown, getCliLogger, mkdir, writeFile600Perm, cleanOldLogFiles} from "../../util/index.js";
+import {onGracefulShutdown, mkdir, writeFile600Perm, cleanOldLogFiles, parseLoggerArgs} from "../../util/index.js";
 import {getVersionData} from "../../util/version.js";
 import {BeaconArgs} from "./options.js";
 import {getBeaconPaths} from "./paths.js";
@@ -79,20 +80,37 @@ export async function beaconHandler(args: BeaconArgs & GlobalArgs): Promise<void
       metricsRegistries,
     });
 
-    if (args.attachToGlobalThis) ((globalThis as unknown) as {bn: BeaconNode}).bn = node;
+    if (args.attachToGlobalThis) (globalThis as unknown as {bn: BeaconNode}).bn = node;
 
     onGracefulShutdown(async () => {
       if (args.persistNetworkIdentity) {
-        const enr = await node.network.getEnr().catch((e) => logger.warn("Unable to persist enr", {}, e));
-        if (enr) {
+        try {
+          const networkIdentity = await node.network.getNetworkIdentity();
           const enrPath = path.join(beaconPaths.beaconDir, "enr");
-          writeFile600Perm(enrPath, enr.encodeTxt());
+          writeFile600Perm(enrPath, networkIdentity.enr);
+        } catch (e) {
+          logger.warn("Unable to persist enr", {}, e as Error);
         }
       }
       abortController.abort();
     }, logger.info.bind(logger));
 
-    abortController.signal.addEventListener("abort", () => node.close(), {once: true});
+    abortController.signal.addEventListener(
+      "abort",
+      async () => {
+        try {
+          await node.close();
+          logger.debug("Beacon node closed");
+        } catch (e) {
+          logger.error("Error closing beacon node", {}, e as Error);
+          // Make sure db is always closed gracefully
+          await db.stop();
+          // Must explicitly exit process due to potential active handles
+          process.exit(1);
+        }
+      },
+      {once: true}
+    );
   } catch (e) {
     await db.stop();
 
@@ -137,7 +155,7 @@ export async function beaconHandlerInit(args: BeaconArgs & GlobalArgs) {
   const logger = initLogger(args, beaconPaths.dataDir, config);
   const {peerId, enr} = await initPeerIdAndEnr(args, beaconPaths.beaconDir, logger);
   // Inject ENR to beacon options
-  beaconNodeOptions.set({network: {discv5: {enr, enrUpdate: !enr.ip && !enr.ip6}}});
+  beaconNodeOptions.set({network: {discv5: {enr: enr.encodeTxt(), config: {enrUpdate: !enr.ip && !enr.ip6}}}});
   // Add simple version string for libp2p agent version
   beaconNodeOptions.set({network: {version: version.split("/")[0]}});
 
@@ -147,12 +165,13 @@ export async function beaconHandlerInit(args: BeaconArgs & GlobalArgs) {
   return {config, options, beaconPaths, network, version, commit, peerId, logger};
 }
 
-export function initLogger(args: BeaconArgs, dataDir: string, config: ChainForkConfig): Logger {
-  const {logger, logParams} = getCliLogger(args, {defaultLogFilepath: path.join(dataDir, "beacon.log")}, config);
+export function initLogger(args: BeaconArgs, dataDir: string, config: ChainForkConfig): LoggerNode {
+  const defaultLogFilepath = path.join(dataDir, "beacon.log");
+  const logger = getNodeLogger(parseLoggerArgs(args, {defaultLogFilepath}, config));
   try {
-    cleanOldLogFiles(logParams.filename, logParams.rotateMaxFiles);
+    cleanOldLogFiles(args, {defaultLogFilepath});
   } catch (e) {
-    logger.debug("Not able to delete log files", logParams, e as Error);
+    logger.debug("Not able to delete log files", {}, e as Error);
   }
 
   return logger;
