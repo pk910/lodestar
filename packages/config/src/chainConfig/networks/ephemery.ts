@@ -33,7 +33,7 @@ const ephemeryBaseChainConfig: ChainConfig = {
   TERMINAL_TOTAL_DIFFICULTY: BigInt("0"),
   // Capella
   CAPELLA_FORK_VERSION: b("0x4000101b"),
-  CAPELLA_FORK_EPOCH: 5,
+  CAPELLA_FORK_EPOCH: 0,
   // Deneb
   DENEB_FORK_VERSION: b("0x5000101b"),
 
