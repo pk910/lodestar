@@ -42,6 +42,9 @@ const ephemeryBaseChainConfig: ChainConfig = {
   DEPOSIT_CHAIN_ID: 39438000,
   DEPOSIT_NETWORK_ID: 39438000,
   DEPOSIT_CONTRACT_ADDRESS: b("0x4242424242424242424242424242424242424242"),
+
+  // Ephemery settings
+  ETH1_FOLLOW_DISTANCE: 12,
 };
 
 // Reset interval (2 days)
